@@ -1,65 +1,77 @@
-// api experimental
+// relay
 const express = require('express');
-const { Redis } = require('@upstash/redis');
 const axios = require('axios');
+const Redis = require('ioredis');
 const app = express();
 app.use(express.json());
 
-// conexion upstash
-const redis = new Redis({
-  url: 'https://calm-mullet-40937.upstash.io',
-  token: 'AZ_pAAIncDFiYjMyYzQ1M2M1NTc0NDY4ODc2MWVjNTVkMmZlMmI2MHAxNDA5Mzc',
-})
+// redis connection
+const redis = new Redis("rediss://default:TU_PASSWORD@tu-db-url.upstash.io:6379");
 
 const CONFIG = {
-    "normal": { placeId: 109983668079237, ttl: 420 }, // 7 min
-    "newbie": { placeId: 96342491571673, ttl: 420 }   // 7 min
+    "normal": { placeId: "109983668079237", ttl: 900 },
+    "newbie": { placeId: "96342491571673", ttl: 300 }
 };
 
-// cache de servers to not saturate
-let serverCache = { normal: [], newbie: [], lastUpdate: 0 };
+// CACHÉ DE SERVIDORES: Render guardará la lista para no cansar a Roblox
+let globalCache = {
+    normal: { list: [], lastUpdate: 0 },
+    newbie: { list: [], lastUpdate: 0 }
+};
 
-// 1. mark down server
 app.post('/mark', async (req, res) => {
-    const { jobId, type } = req.body;
-    const key = `swarm:${type}:${jobId}`;
-    await redis.set(key, "seen", { ex: CONFIG[type].ttl });
-    res.send("OK");
+    try {
+        const { jobId, type } = req.body;
+        await redis.setex(`swarm:${type}:${jobId}`, CONFIG[type].ttl, "seen");
+        res.send("OK");
+    } catch (e) { res.status(500).send("DB Busy"); }
 });
 
-// 2. find
 app.get('/get-server', async (req, res) => {
     const { type, currentJobId } = req.query;
-    const now = Date.now();
+    if (!CONFIG[type]) return res.sendStatus(400);
 
     try {
-        // update roblox list every 10 sec
-        if (now - serverCache.lastUpdate > 10000) {
+        const now = Date.now();
+        // update every 10 sec
+        if (now - globalCache[type].lastUpdate > 10000) {
             const pID = CONFIG[type].placeId;
-            const resp = await axios.get(`https://games.roblox.com/v1/games/${pID}/servers/Public?limit=100`);
-            serverCache[type] = resp.data.data;
-            serverCache.lastUpdate = now;
+            // aleatoriedad
+            let cursor = "";
+            const skip = Math.floor(Math.random() * 5);
+            for(let i = 0; i < skip; i++) {
+                const pd = await axios.get(`https://games.roblox.com/v1/games/${pID}/servers/Public?limit=100&cursor=${cursor}`);
+                cursor = pd.data.nextPageCursor;
+                if(!cursor) break;
+            }
+            const response = await axios.get(`https://games.roblox.com/v1/games/${pID}/servers/Public?limit=100&cursor=${cursor}`);
+            globalCache[type].list = response.data.data;
+            globalCache[type].lastUpdate = now;
+            console.log(`[!] Caché ${type.toUpperCase()} actualizada.`);
         }
 
-        const allServers = serverCache[type];
-        const freshServers = [];
+        const allServers = globalCache[type].list;
+        const available = [];
 
-        // filtro de redis (memoria)
+        // filtrado masivo
         for (let s of allServers) {
-            const isBurned = await redis.get(`swarm:${type}:${s.id}`);
-            if (!isBurned && s.id !== currentJobId && s.playing < s.maxPlayers) {
-                freshServers.push(s.id);
+            const burned = await redis.get(`swarm:${type}:${s.id}`);
+            if (!burned && s.id !== currentJobId && s.playing < s.maxPlayers) {
+                available.push(s.id);
             }
         }
 
-        if (freshServers.length > 0) {
-            // aleatoriedad 
-            const target = freshServers[Math.floor(Math.random() * freshServers.length)];
-            res.json({ jobId: target });
+        if (available.length > 0) {
+            res.json({ jobId: available[Math.floor(Math.random() * available.length)] });
         } else {
-            res.json({ jobId: allServers[0].id, note: "Resetting loop" });
+            // salvar cache
+            res.json({ jobId: allServers[0].id, note: "Rotating" });
         }
-    } catch (e) { res.status(500).send("Nexus Overload"); }
+    } catch (e) { 
+        console.error("Error en el nexo:", e.message);
+        res.status(500).send("Nexus Lag"); 
+    }
 });
 
-app.listen(3000, () => console.log("working"));
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log("optimizado para bots🟢🔴"));
