@@ -6,7 +6,7 @@ app.use(cors());
 app.use(express.json());
 
 app.get("/", (req, res) => {
-  res.send("Moderation API is running");
+  res.send("Moderation API running");
 });
 
 const PORT = process.env.PORT || 3000;
