@@ -111,6 +111,29 @@ setInterval(() => {
     if (removed > 0) console.log(`[CLEANUP] Limpiados ${removed} entradas antiguas`);
 }, 5 * 60 * 1000);
 
+// Endpoint de depuración - Agrega esto ANTES de app.listen()
+app.get('/api/debug', (req, res) => {
+    const now = Date.now();
+    const activeBlacklist = [];
+    
+    blacklist.forEach((timestamp, jobId) => {
+        const timeLeft = CONFIG.BLACKLIST_DURATION_MS - (now - timestamp);
+        if (timeLeft > 0) {
+            activeBlacklist.push({
+                jobId: jobId,
+                expiresInMinutes: (timeLeft / 60000).toFixed(1)
+            });
+        }
+    });
+    
+    res.json({
+        status: 'online',
+        blacklistSize: blacklist.size,
+        activeBlacklist: activeBlacklist,
+        memoryUsage: process.memoryUsage().heapUsed / 1024 / 1024 + ' MB'
+    });
+});
+
 app.listen(CONFIG.PORT, () => {
     console.log(`✅ API funcionando. Blacklist: ${CONFIG.BLACKLIST_DURATION_MS/60000}min`);
     console.log(`🌐 Place IDs: Normal=${CONFIG.NORMAL_PLACE_ID}, NewPlayers=${CONFIG.NEW_PLAYERS_PLACE_ID}`);
