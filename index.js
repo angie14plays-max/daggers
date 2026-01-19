@@ -1,44 +1,35 @@
-// cloudflare
-// blossom api
-
 const blacklist = new Map();
-const TTL = 10 * 60 * 1000; // 10 MINUTOS EXACTOS
+const TTL = 10 * 60 * 1000; // 10 MINUTOS
 
 export default {
-  async fetch(request, env, ctx) {
+  async fetch(request) {
     const url = new URL(request.url);
     const now = Date.now();
 
-    // passive cleaning
+    // Limpieza agresiva de memoria
     for (let [id, time] of blacklist) {
       if (now - time > TTL) blacklist.delete(id);
     }
 
-    // burning ids
     if (request.method === "POST" && url.pathname === "/burn") {
       try {
         const { jobId } = await request.json();
         if (jobId) {
           blacklist.set(jobId, now);
-          return new Response(JSON.stringify({ status: "Burnt", id: jobId }), {
-            headers: { "Content-Type": "application/json" },
-            status: 200
+          return new Response(JSON.stringify({ status: "Burnt", count: blacklist.size }), {
+            headers: { "Content-Type": "application/json" }
           });
         }
-      } catch (e) {
-        return new Response("Invalid JSON", { status: 400 });
-      }
+      } catch (e) { return new Response("Error", { status: 400 }); }
     }
 
-    // obtain list
     if (url.pathname === "/list") {
-      const listArray = Array.from(blacklist.keys());
-      return new Response(JSON.stringify(listArray), {
-        headers: { "Content-Type": "application/json" },
-        status: 200
+      const data = Array.from(blacklist.keys());
+      return new Response(JSON.stringify(data), {
+        headers: { "Content-Type": "application/json" }
       });
     }
 
-    return new Response("blossom working 🟢", { status: 200 });
-  },
+    return new Response("READY 🟢", { status: 200 });
+  }
 };
