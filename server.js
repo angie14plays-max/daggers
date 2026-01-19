@@ -6,7 +6,7 @@ const app = express();
 app.use(express.json());
 
 // redis connection
-const redis = new Redis("rediss://default:TU_PASSWORD@tu-db-url.upstash.io:6379");
+const redis = new Redis("redis://default:AZ_pAAIncDFiYjMyYzQ1M2M1NTc0NDY4ODc2MWVjNTVkMmZlMmI2MHAxNDA5Mzc@calm-mullet-40937.upstash.io:6379");
 
 const CONFIG = {
     "normal": { placeId: "109983668079237", ttl: 900 },
