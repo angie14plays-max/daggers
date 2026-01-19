@@ -1,9 +1,12 @@
 {
   "name": "blossom-api",
-  "version": "1.0.0",
+  "version": "16.2.0",
+  "description": "api",
   "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
   "dependencies": {
-    "express": "^4.18.2",
-    "axios": "^1.3.4"
+    "express": "^4.18.2"
   }
 }
