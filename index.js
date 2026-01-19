@@ -3,97 +3,114 @@ const fetch = (...args) => import('node-fetch').then(({default: fetch}) => fetch
 const app = express();
 app.use(express.json());
 
-// CONFIGURACIÓN (AJUSTA AQUÍ)
 const CONFIG = {
-    NORMAL_PLACE_ID: '109983668079237',
-    NEW_PLAYERS_PLACE_ID: '96342491571673',
-    BLACKLIST_DURATION_MS: 15 * 60 * 1000, // 15 minutos en milisegundos (¡AJUSTABLE!)
+    NORMAL_PLACE_ID: '109983668079237',   // Servidores normales
+    NEW_PLAYERS_PLACE_ID: '96342491571673', // New players
+    BLACKLIST_DURATION_MS: 10 * 60 * 1000, // 10 minutos
     PORT: process.env.PORT || 3000
 };
 
-// memory
-let serverBlacklist = new Map(); // JobId -> timestamp de visita
+// Blacklist en memoria: { "jobId": timestamp }
+let blacklist = new Map();
 
-// Función para obtener servidores de la API de Roblox (pública, limitada)
-async function fetchServers(placeId) {
+// CONSULTA SERVIDORES REALES DE ROBLOX
+async function getActiveServers(placeId) {
     const url = `https://games.roblox.com/v1/games/${placeId}/servers/Public?sortOrder=Desc&limit=100`;
     try {
         const response = await fetch(url);
         const data = await response.json();
-        return data.data || [];
+        return data.data || []; // Array de servidores reales {id, playing, maxPlayers}
     } catch (error) {
-        console.error(`Error fetching servers for ${placeId}:`, error);
+        console.error('Error fetching servers:', error);
         return [];
     }
 }
 
-// Lógica principal: Filtra servidores blacklisted y elige uno.
-function selectTargetServer(servers, blacklist, durationMs) {
+// FILTRA quitando blacklisted
+function filterBlacklisted(servers) {
     const now = Date.now();
-    const availableServers = servers.filter(server => {
+    return servers.filter(server => {
         const blacklistTime = blacklist.get(server.id);
-        if (!blacklistTime) return true; // Nunca visitado
-        return (now - blacklistTime) > durationMs; // Visitado, pero ya pasó el tiempo
+        if (!blacklistTime) return true; // No está en blacklist
+        return (now - blacklistTime) > CONFIG.BLACKLIST_DURATION_MS; // Ya pasó el tiempo
     });
-
-    if (availableServers.length > 0) {
-        // Elige uno al azar de los disponibles para distribución.
-        return availableServers[Math.floor(Math.random() * availableServers.length)];
-    } else {
-        // Si todos están en blacklist, elige el más antiguo (el que lleva más tiempo en la lista).
-        let oldestServer = null;
-        let oldestTime = now;
-        for (const server of servers) {
-            const blacklistTime = blacklist.get(server.id);
-            if (blacklistTime < oldestTime) {
-                oldestTime = blacklistTime;
-                oldestServer = server;
-            }
-        }
-        return oldestServer; // Puede ser null si no hay servidores
-    }
 }
 
-// ENDPOINT 1: "Dame un servidor al que saltar"
+// ENDPOINT 1: "Registra este JobId" (POST /api/visited)
+app.post('/api/visited', (req, res) => {
+    const { jobId } = req.body;
+    if (!jobId) return res.status(400).json({ error: 'Se requiere jobId' });
+    
+    blacklist.set(jobId, Date.now());
+    console.log(`[BLACKLIST] Agregado: ${jobId} (Total: ${blacklist.size})`);
+    res.json({ success: true, jobId });
+});
+
+// ENDPOINT 2: "Dame un servidor fresco" (GET /api/next-server)
 app.get('/api/next-server', async (req, res) => {
-    const serverType = req.query.type || 'normal'; // 'normal' o 'newplayers'
+    const serverType = req.query.type || 'normal';
     const placeId = serverType === 'newplayers' ? CONFIG.NEW_PLAYERS_PLACE_ID : CONFIG.NORMAL_PLACE_ID;
-
-    const servers = await fetchServers(placeId);
-    if (servers.length === 0) {
-        return res.status(500).json({ error: 'No se pudieron obtener servidores.' });
+    
+    // 1. Obtener servidores REALES de Roblox
+    const allServers = await getActiveServers(placeId);
+    if (allServers.length === 0) {
+        return res.status(500).json({ error: 'No se pudieron obtener servidores de Roblox' });
     }
-
-    const targetServer = selectTargetServer(servers, serverBlacklist, CONFIG.BLACKLIST_DURATION_MS);
-    if (!targetServer) {
-        return res.status(404).json({ error: 'No hay servidores disponibles tras aplicar el filtro.' });
+    
+    // 2. Filtrar blacklisted
+    const availableServers = filterBlacklisted(allServers);
+    console.log(`[API] Servidores: ${allServers.length} total, ${availableServers.length} disponibles tras filtro`);
+    
+    // 3. Elegir uno (el de menos jugadores para mayor estabilidad)
+    let chosenServer;
+    if (availableServers.length > 0) {
+        // Prefiere servidores con pocos jugadores (más estables para teleport)
+        availableServers.sort((a, b) => (a.playing || 0) - (b.playing || 0));
+        chosenServer = availableServers[0];
+    } else {
+        // Si TODOS están blacklisted, elige el más antiguo en la lista
+        const now = Date.now();
+        let oldestTime = now;
+        allServers.forEach(server => {
+            const listTime = blacklist.get(server.id) || 0;
+            if (listTime < oldestTime) {
+                oldestTime = listTime;
+                chosenServer = server;
+            }
+        });
+        if (chosenServer) {
+            console.log(`[API] ⚠️ Todos blacklisted. Eligiendo el más viejo: ${chosenServer.id}`);
+        }
     }
-
+    
+    if (!chosenServer) {
+        return res.status(404).json({ error: 'No hay servidores disponibles' });
+    }
+    
+    // 4. Responder con el JobId REAL
     res.json({
+        jobId: chosenServer.id,
+        playerCount: chosenServer.playing,
+        maxPlayers: chosenServer.maxPlayers,
         placeId: placeId,
-        jobId: targetServer.id,
-        playerCount: targetServer.playing,
-        maxPlayers: targetServer.maxPlayers,
-        // ¡Enviar el tiempo actual para que el cliente sepa cuándo fue seleccionado!
-        selectedAt: Date.now()
+        source: 'roblox-api'
     });
 });
 
-// ENDPOINT 2: "Acabo de llegar a este servidor, blacklistéalo"
-app.post('/api/visited', (req, res) => {
-    const { jobId } = req.body;
-    if (!jobId) {
-        return res.status(400).json({ error: 'Se requiere jobId.' });
+// Limpieza periódica de blacklist vieja
+setInterval(() => {
+    const now = Date.now();
+    let removed = 0;
+    for (let [jobId, time] of blacklist.entries()) {
+        if (now - time > CONFIG.BLACKLIST_DURATION_MS * 2) { // Doble tiempo
+            blacklist.delete(jobId);
+            removed++;
+        }
     }
-    // Añade a la blacklist con el timestamp ACTUAL.
-    serverBlacklist.set(jobId, Date.now());
-    console.log(`[BLACKLIST] Agregado ${jobId}. Tamaño actual: ${serverBlacklist.size}`);
-    // Limpieza opcional de entradas muy viejas (más de 24h) para no llenar la memoria.
-    // ...
-    res.json({ success: true, jobId, timestamp: serverBlacklist.get(jobId) });
-});
+    if (removed > 0) console.log(`[CLEANUP] Limpiados ${removed} entradas antiguas`);
+}, 5 * 60 * 1000);
 
 app.listen(CONFIG.PORT, () => {
-    console.log(`server hop ${CONFIG.PORT}`);
-    console.log(`blacklist duration: ${CONFIG.BLACKLIST_DURATION_MS / 60000} minutos`);
+    console.log(`✅ API funcionando. Blacklist: ${CONFIG.BLACKLIST_DURATION_MS/60000}min`);
+    console.log(`🌐 Place IDs: Normal=${CONFIG.NORMAL_PLACE_ID}, NewPlayers=${CONFIG.NEW_PLAYERS_PLACE_ID}`);
 });
