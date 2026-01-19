@@ -1,177 +1,71 @@
-// index.js - BACKEND CON UUID SYSTEM
+// [[ DAVID'S LEGION API v4.2 - STABLE VERSION ]]
 const express = require('express');
+const axios = require('axios');
 const { v4: uuidv4 } = require('uuid');
-const fetch = (...args) => import('node-fetch').then(({default: fetch}) => fetch(...args));
 const app = express();
-
 app.use(express.json());
-app.use((req, res, next) => {
-    res.header('Access-Control-Allow-Origin', '*');
-    res.header('Access-Control-Allow-Headers', 'Content-Type');
-    next();
-});
 
-const CONFIG = {
-    PORT: process.env.PORT || 3000,
-    BLACKLIST_MINUTES: 10,
-    PLACES: {
-        NORMAL: { id: '109983668079237', type: 'normal' },
-        NEW_PLAYERS: { id: '96342491571673', type: 'newplayers' }
-    }
-};
+// Memoria de la Legión
+let serverDatabase = new Map(); // UUID -> { jobId, type }
+let blacklist = new Map();      // UUID -> expiryTime
 
-// Almacenamiento con UUID
-const serverDatabase = new Map(); // UUID -> { robloxJobId, placeType, firstSeen, visits }
-const blacklist = new Map();      // UUID -> expiryTime
-
-// ==================== ENDPOINTS ====================
-
-// 1. REGISTRAR SERVIDOR Y OBTENER UUID
-app.post('/api/register', (req, res) => {
-    const { robloxJobId, placeType } = req.body;
-    
-    // Buscar si ya existe
-    let existingUUID = null;
-    for (const [uuid, data] of serverDatabase.entries()) {
-        if (data.robloxJobId === robloxJobId && data.placeType === placeType) {
-            existingUUID = uuid;
-            data.visits++;
-            data.lastSeen = Date.now();
-            break;
-        }
-    }
-    
-    const uuid = existingUUID || uuidv4();
-    
-    if (!existingUUID) {
-        serverDatabase.set(uuid, {
-            robloxJobId,
-            placeType,
-            firstSeen: Date.now(),
-            lastSeen: Date.now(),
-            visits: 1
-        });
-    }
-    
-    res.json({ uuid, isNew: !existingUUID, robloxJobId });
-});
-
-// 2. BLACKLIST POR UUID
+// 1. ENDPOINT: REGISTRAR Y BLACKLISTEAR (Sincronizado con Lua)
 app.post('/api/blacklist', (req, res) => {
-    const { uuid } = req.body;
+    const { robloxJobId, placeType } = req.body;
+    const minutes = 15; // Tiempo de blacklist
     
-    if (!serverDatabase.has(uuid)) {
-        return res.status(404).json({ error: 'UUID no encontrado' });
-    }
+    // Crear o buscar UUID
+    let uuid = uuidv4();
+    serverDatabase.set(uuid, { robloxJobId, placeType });
     
-    const expiry = Date.now() + (CONFIG.BLACKLIST_MINUTES * 60 * 1000);
+    // Meter en Blacklist
+    const expiry = Date.now() + (minutes * 60 * 1000);
     blacklist.set(uuid, expiry);
     
-    const server = serverDatabase.get(uuid);
-    console.log(`[BLACKLIST] ${uuid} -> ${server.robloxJobId} (${server.placeType})`);
-    
-    res.json({ success: true, uuid, expiresAt: expiry });
+    console.log(`[🚫] Bloqueado: ${robloxJobId} (${placeType}) por ${minutes}min`);
+    res.json({ success: true, uuid });
 });
 
-// 3. OBTENER SERVIDOR FRESCO (CON UUID)
+// 2. ENDPOINT: BUSCADOR FRESCO (Sincronizado con Lua)
 app.get('/api/next-server', async (req, res) => {
-    const placeType = req.query.type || 'normal';
-    const placeId = placeType === 'newplayers' 
-        ? CONFIG.PLACES.NEW_PLAYERS.id 
-        : CONFIG.PLACES.NORMAL.id;
+    const type = req.query.type || 'normal';
+    const placeId = (type === 'newplayers') ? 96342491571673 : 109983668079237;
     
     try {
-        // Obtener de Roblox
-        const url = `https://games.roblox.com/v1/games/${placeId}/servers/Public?limit=100`;
-        const response = await fetch(url);
-        const data = await response.json();
-        
-        if (!data.data) return res.status(500).json({ error: 'Roblox API error' });
-        
+        // Salto global aleatorio
+        let cursor = "";
+        const skip = Math.floor(Math.random() * 5);
+        for(let i = 0; i < skip; i++) {
+            const r = await axios.get(`https://games.roblox.com/v1/games/${placeId}/servers/Public?limit=100&cursor=${cursor}`);
+            cursor = r.data.nextPageCursor;
+            if(!cursor) break;
+        }
+
+        const response = await axios.get(`https://games.roblox.com/v1/games/${placeId}/servers/Public?limit=100&cursor=${cursor}`);
+        const servers = response.data.data;
         const now = Date.now();
-        const candidates = [];
-        
-        // Para cada servidor de Roblox
-        for (const robloxServer of data.data) {
-            // Buscar si ya tiene UUID en nuestra DB
-            let uuid = null;
-            for (const [existingUuid, serverData] of serverDatabase.entries()) {
-                if (serverData.robloxJobId === robloxServer.id && 
-                    serverData.placeType === placeType) {
-                    uuid = existingUuid;
+
+        // Filtrar servidores que NO estén en la blacklist de UUID
+        const candidates = servers.filter(s => {
+            let isBlacklisted = false;
+            for (let [uuid, data] of serverDatabase.entries()) {
+                if (data.robloxJobId === s.id && blacklist.has(uuid) && blacklist.get(uuid) > now) {
+                    isBlacklisted = true;
                     break;
                 }
             }
-            
-            // Si no tiene UUID, es candidato (nuevo para nosotros)
-            const isNewToUs = !uuid;
-            
-            // Si tiene UUID, verificar si no está blacklisted
-            const isBlacklisted = uuid && blacklist.has(uuid) && blacklist.get(uuid) > now;
-            
-            if (isNewToUs || !isBlacklisted) {
-                candidates.push({
-                    robloxJobId: robloxServer.id,
-                    uuid: uuid,
-                    isNewToUs,
-                    playerCount: robloxServer.playing,
-                    maxPlayers: robloxServer.maxPlayers
-                });
-            }
-        }
-        
-        // Elegir el mejor candidato (priorizar nuevos)
-        const newCandidates = candidates.filter(c => c.isNewToUs);
-        const target = (newCandidates.length > 0)
-            ? newCandidates[Math.floor(Math.random() * newCandidates.length)]
-            : candidates[Math.floor(Math.random() * candidates.length)];
-        
-        // Si es nuevo, crear registro ahora
-        if (target.isNewToUs) {
-            const newUuid = uuidv4();
-            serverDatabase.set(newUuid, {
-                robloxJobId: target.robloxJobId,
-                placeType,
-                firstSeen: now,
-                lastSeen: now,
-                visits: 0
-            });
-            target.uuid = newUuid;
-        }
-        
-        res.json({
-            jobId: target.robloxJobId,
-            uuid: target.uuid,
-            playerCount: target.playerCount,
-            maxPlayers: target.maxPlayers,
-            placeType,
-            candidatesCount: candidates.length,
-            totalFromRoblox: data.data.length
+            return !isBlacklisted && s.playing < s.maxPlayers;
         });
-        
-    } catch (error) {
-        res.status(500).json({ error: error.message });
+
+        if (candidates.length > 0) {
+            const target = candidates[Math.floor(Math.random() * candidates.length)];
+            res.json({ jobId: target.id, freshCount: candidates.length });
+        } else {
+            res.json({ jobId: servers[0].id, note: "Rotación completa" });
+        }
+    } catch (e) {
+        res.status(500).json({ error: "Error en red de Roblox" });
     }
 });
 
-// 4. ESTADO DEL SISTEMA
-app.get('/api/stats', (req, res) => {
-    const stats = {
-        totalServers: serverDatabase.size,
-        blacklisted: Array.from(blacklist.entries()).filter(([_, expiry]) => expiry > Date.now()).length,
-        byPlaceType: {
-            normal: 0,
-            newplayers: 0
-        }
-    };
-    
-    serverDatabase.forEach(server => {
-        stats.byPlaceType[server.placeType]++;
-    });
-    
-    res.json(stats);
-});
-
-app.listen(CONFIG.PORT, () => {
-    console.log(`✅ UUID Blacklist API en puerto ${CONFIG.PORT}`);
-});
+app.listen(process.env.PORT || 3000, () => console.log("CEREBRO ACTIVO 🟢"));
