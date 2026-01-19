@@ -1,24 +1,24 @@
-// api ag
+// blossom aj
 const express = require('express');
 const app = express();
 app.use(express.json());
 
-// memory: { "JobId": ExpireTimestamp }
-let blacklist = {};
-const TTL = 10 * 60 * 1000; // 10 min
+// memory
+let blacklist = {}; 
+const TTL = 10 * 60 * 1000; // 10 MINUTOS EXACTOS (Cambiable aquí)
 
-// 1. burned id
+// blakclist
 app.post('/burn', (req, res) => {
     const { jobId } = req.body;
     blacklist[jobId] = Date.now();
-    console.log(`[-] Sector marcado como quemado: ${jobId}`);
+    console.log(`[-] Sector marcado como quemado por 10min: ${jobId}`);
     res.send("OK");
 });
 
-// 2. list
+// prohibited servers
 app.get('/list', (req, res) => {
     const now = Date.now();
-    // Limpieza automática antes de entregar
+    // Limpieza automática
     for (let id in blacklist) {
         if (now - blacklist[id] > TTL) delete blacklist[id];
     }
@@ -26,4 +26,4 @@ app.get('/list', (req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log("blossom api working 🟢"));
+app.listen(PORT, () => console.log("blossom api 🟢"));
