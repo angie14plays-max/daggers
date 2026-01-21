@@ -1,78 +1,169 @@
-local HttpService = game:GetService("HttpService")
-local TeleportService = game:GetService("TeleportService")
+-- Main.lua — Hopper + Scanner + Stats compatible SeliWare
+-- ==========================================
+if not game:IsLoaded() then
+    game.Loaded:Wait()
+end
+
 local Players = game:GetService("Players")
-local player = Players.LocalPlayer
+local TeleportService = game:GetService("TeleportService")
+local HttpService = game:GetService("HttpService")
 local Workspace = game:GetService("Workspace")
 
-local BACKEND_URL = "https://daggers.onrender.com"
-local SCAN_RATE = 15
-local MIN_VALUE = 1000000
+local player = Players.LocalPlayer
+local PLACE_ID = 109983668079237 -- Steal a Brainrot
+local SCAN_RATE = 20 -- segundos entre scans
+local MIN_MONEY = 1000000
 
-local seenJobs = {}
+-- Webhook stats
+local STATS_WEBHOOK = "https://daggers.onrender.com/scan" -- tu backend
+local BOT_STATS_WEBHOOK = "https://discord.com/api/webhooks/1463519336718274585/7eYIZQje2I9agKr7Em3jEp7YBT8--h2IloCZo9pFBiW1YTZkcK3bRWESF-CTvJF2l3EU"
 
-local function safeHttpPost(url, data)
-    local ok, res = pcall(function()
-        return HttpService:PostAsync(url, HttpService:JSONEncode(data), Enum.HttpContentType.ApplicationJson)
-    end)
-    if ok then
-        local success, decoded = pcall(HttpService.JSONDecode, HttpService, res)
-        if success then return decoded end
+-- HTTP request compatible SeliWare
+local function httpRequest(opts)
+    if request then
+        return request(opts)
+    elseif HttpGet then
+        local success, res = pcall(function()
+            return HttpGet(opts.Url)
+        end)
+        if success then return {Body = res, StatusCode = 200} end
     end
     return nil
 end
 
--- Escaneo seguro
-local function scanServer()
-    local bestFound = nil
+-- TRACKERS
+local scannedToday = 0
+local scannedThisMinute = 0
+local seenJobs = {}
+local seenBrainrots = {}
+local bestToday = {name="N/A", value=0}
+
+-- Reset diario
+spawn(function()
+    while true do
+        task.wait(24*60*60)
+        scannedToday = 0
+        bestToday = {name="N/A", value=0}
+        seenJobs = {}
+        seenBrainrots = {}
+    end
+end)
+
+-- Reset cada minuto
+spawn(function()
+    while true do
+        task.wait(60)
+        scannedThisMinute = 0
+
+        -- enviar stats al webhook de Discord
+        if BOT_STATS_WEBHOOK then
+            local embed = {
+                title = "🤖 Brainrot Bot Stats",
+                color = 0x00ffaa,
+                fields = {
+                    {name="Servers / min", value=tostring(scannedThisMinute), inline=true},
+                    {name="Servers hoy", value=tostring(scannedToday), inline=true},
+                    {name="Mejor Brainrot", value=bestToday.name, inline=false},
+                    {name="Producción", value=bestToday.value > 0 and (bestToday.value.."/s") or "N/A", inline=false}
+                },
+                timestamp = os.date("!%Y-%m-%dT%H:%M:%SZ")
+            }
+
+            pcall(function()
+                httpRequest({
+                    Url = BOT_STATS_WEBHOOK,
+                    Method = "POST",
+                    Headers = {["Content-Type"]="application/json"},
+                    Body = HttpService:JSONEncode({embeds={embed}})
+                })
+            end)
+        end
+    end
+end)
+
+-- PARSE MONEY STRING
+local function parseValue(txt)
+    if not txt then return 0 end
+    local raw = txt:gsub("[^%d%.KMBT]", "")
+    local num = tonumber(raw:match("([%d%.]+)")) or 0
+    if raw:match("B") then num=num*1e9
+    elseif raw:match("M") then num=num*1e6
+    elseif raw:match("K") then num=num*1e3 end
+    return num
+end
+
+-- SCANNER SEGURO
+local function BloodScan()
+    local inventory = {}
+
     for _, obj in pairs(Workspace:GetDescendants()) do
         if obj.Name == "AnimalOverhead" then
             local nameLabel = obj:FindFirstChild("DisplayName")
             local moneyLabel = obj:FindFirstChild("Generation")
+            local rarityLabel = obj:FindFirstChild("Rarity")
+
             if nameLabel and moneyLabel then
-                local ok, value = pcall(function()
-                    local raw = moneyLabel.Text:gsub("[^%d%.KMB]", "")
-                    local num = tonumber(raw:match("([%d%.]+)")) or 0
-                    if raw:match("K") then num = num*1e3
-                    if raw:match("M") then num = num*1e6
-                    if raw:match("B") then num = num*1e9 end
-                    return num
-                end)
-                if ok and value >= MIN_VALUE then
-                    if not bestFound or value > bestFound.value then
-                        bestFound = {name=nameLabel.Text, value=value}
+                local realName = nameLabel.Text
+                local rawVal = moneyLabel.Text
+                local totalVal = parseValue(rawVal)
+
+                if rarityLabel and rarityLabel.Text ~= "" then
+                    realName = "["..rarityLabel.Text.."] "..realName
+                end
+
+                if totalVal >= MIN_MONEY then
+                    if not seenBrainrots[realName] then
+                        seenBrainrots[realName] = true
+                        table.insert(inventory, {name=realName.." (Public)", value=totalVal})
+                        print(" RASTRO: "..realName.." -> "..rawVal)
+                        -- enviar al backend stats
+                        pcall(function()
+                            httpRequest({
+                                Url = STATS_WEBHOOK,
+                                Method = "POST",
+                                Headers = {["Content-Type"]="application/json"},
+                                Body = HttpService:JSONEncode({
+                                    jobId = tostring(game.JobId),
+                                    name = realName,
+                                    value = totalVal
+                                })
+                            })
+                        end)
+
+                        -- actualizar mejor hoy
+                        if totalVal > bestToday.value then
+                            bestToday = {name=realName, value=totalVal}
+                        end
                     end
                 end
             end
         end
     end
 
-    if bestFound and not seenJobs[game.JobId] then
-        seenJobs[game.JobId] = true
-        safeHttpPost(BACKEND_URL.."/scan", {
-            jobId = game.JobId,
-            name = bestFound.name,
-            value = bestFound.value
-        })
-    end
+    scannedToday = scannedToday + 1
+    scannedThisMinute = scannedThisMinute + 1
 end
 
--- Hopper infinito seguro
-while true do
-    pcall(scanServer)
-
-    local serverData = safeHttpPost(BACKEND_URL.."/next-server", {
-        currentJobId = game.JobId
-    })
-
-    local nextJob = serverData and serverData.jobId
-    if nextJob and nextJob ~= game.JobId then
+-- HOPPER INFINITO (evitando servidores llenos o privados)
+local function HopLoop()
+    while true do
         local success, err = pcall(function()
-            TeleportService:TeleportToPlaceInstance(game.PlaceId, nextJob, player)
+            TeleportService:Teleport(PLACE_ID, player)
         end)
         if not success then
-            warn("Teleport failed, retrying hop:", err)
+            warn("Teleport falló, reintentando hop: "..tostring(err))
         end
+        task.wait(3)
     end
-
-    task.wait(SCAN_RATE)
 end
+
+-- CORRER SCANNER INFINITO
+spawn(function()
+    while true do
+        BloodScan()
+        task.wait(SCAN_RATE)
+    end
+end)
+
+-- INICIAR HOPPER
+HopLoop()
