@@ -1,39 +1,23 @@
-// ─────────────────────────────
-// 1️⃣ IMPORTS (ARRIBA DEL TODO)
-// ─────────────────────────────
+
 import express from "express";
 import cors from "cors";
 import Redis from "ioredis";
 
-// ─────────────────────────────
-// 2️⃣ CONFIGURACIÓN GLOBAL
-// (AQUÍ REEMPLAZASTE EL TTL)
-// ─────────────────────────────
 const BLACKLIST_TTL_SECONDS =
   Number(process.env.BLACKLIST_TTL_SECONDS) || 15 * 60; // default 15 min
 
-// ─────────────────────────────
-// 3️⃣ CREAR APP + MIDDLEWARES
-// ─────────────────────────────
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-// ─────────────────────────────
-// 4️⃣ CONEXIÓN A REDIS (UNA SOLA VEZ)
-// ─────────────────────────────
 const redis = new Redis(process.env.REDIS_URL);
 
-// ─────────────────────────────
-// 5️⃣ ENDPOINTS (TODOS VAN AQUÍ)
-// ─────────────────────────────
-
-// 5.1 Health check
+// fix v1
 app.get("/", (req, res) => {
-  res.send("Moderation API with Redis running");
+  res.send("working yay");
 });
 
-// 5.2 CONFIRMAR QUE YA ENTRASTE AL SERVER
+
 app.post("/confirm-join", async (req, res) => {
   try {
     const { jobId } = req.body;
@@ -57,7 +41,7 @@ app.post("/confirm-join", async (req, res) => {
   }
 });
 
-// 5.3 PEDIR SIGUIENTE SERVER NO BLACKLISTEADO
+
 app.post("/next-server", async (req, res) => {
   try {
     const { servers } = req.body;
@@ -97,9 +81,8 @@ app.post("/next-server", async (req, res) => {
   }
 });
 
-// ─────────────────────────────
-// 6️⃣ LISTEN (SIEMPRE AL FINAL)
-// ─────────────────────────────
+
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log("API running on port", PORT);
