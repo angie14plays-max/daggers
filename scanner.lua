@@ -1,44 +1,62 @@
-local cfg = loadstring(game:HttpGet("CONFIG_URL"))()
 local HttpService = game:GetService("HttpService")
+local Players = game:GetService("Players")
 local Workspace = game:GetService("Workspace")
+local player = Players.LocalPlayer
 
-if not game:IsLoaded() then game.Loaded:Wait() end
-repeat task.wait() until Workspace:FindFirstChild("Plots")
+local Config = loadstring(game:HttpGet("https://raw.githubusercontent.com/TU_USUARIO/TU_REPO/main/config.lua"))()
+
+local req = (syn and syn.request) or (http and http.request) or (http_request) or (fluxus and fluxus.request) or request
+if not req then return warn("No HTTP executor found") end
+
+local seenLogs = {}
 
 local function parseValue(txt)
-    local n = tonumber(txt:match("[%d%.]+"))
-    if not n then return 0 end
-    if txt:find("K") then n*=1e3 end
-    if txt:find("M") then n*=1e6 end
-    if txt:find("B") then n*=1e9 end
-    return n
+    if not txt then return 0 end
+    local raw = txt:gsub("[^%d%.KMBT]", "")
+    local num = tonumber(raw:match("([%d%.]+)")) or 0
+    if raw:match("B") then num=num*1e9
+    elseif raw:match("M") then num=num*1e6
+    elseif raw:match("K") then num=num*1e3 end
+    return num
 end
 
-local best = { name = nil, value = 0 }
-
-for _, obj in ipairs(Workspace:GetDescendants()) do
-    if obj.Name == "AnimalOverhead" then
-        local gen = obj:FindFirstChild("Generation")
-        local name = obj:FindFirstChild("DisplayName")
-
-        if gen and name then
-            local val = parseValue(gen.Text)
-            if val >= cfg.MIN_VALUE and val > best.value then
-                best = { name = name.Text, value = val }
+local function scanServer()
+    local best = {name="N/A", value=0}
+    for _, obj in pairs(Workspace:GetDescendants()) do
+        if obj.Name == "AnimalOverhead" then
+            local nameLabel = obj:FindFirstChild("DisplayName")
+            local moneyLabel = obj:FindFirstChild("Generation")
+            if nameLabel and moneyLabel then
+                local val = parseValue(moneyLabel.Text)
+                if val >= Config.MIN_MONEY then
+                    local logKey = obj:GetFullName()
+                    if not seenLogs[logKey] then
+                        seenLogs[logKey] = true
+                        -- enviar al backend
+                        local body = HttpService:JSONEncode({
+                            jobId = game.JobId,
+                            name = nameLabel.Text,
+                            value = val
+                        })
+                        pcall(function()
+                            req({
+                                Url = Config.BACKEND_URL,
+                                Method = "POST",
+                                Headers = {["Content-Type"]="application/json"},
+                                Body = body
+                            })
+                        end)
+                    end
+                    if val > best.value then best = {name=nameLabel.Text, value=val} end
+                end
             end
         end
     end
 end
 
-if best.name then
-    request({
-        Url = cfg.STATS_API,
-        Method = "POST",
-        Headers = {["Content-Type"]="application/json"},
-        Body = HttpService:JSONEncode({
-            jobId = game.JobId,
-            name = best.name,
-            value = best.value
-        })
-    })
-end
+task.spawn(function()
+    while true do
+        scanServer()
+        task.wait(Config.SCAN_RATE)
+    end
+end)
