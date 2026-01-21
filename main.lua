@@ -1,5 +1,7 @@
--- Main.lua — Hopper + Scanner + Stats compatible SeliWare
--- ==========================================
+--// MAIN BLOSSOM SCANNER + HOPPER + STATS EMBED
+--// Compatible con Seliware
+--// Autor: daggers repo actualizado
+
 if not game:IsLoaded() then
     game.Loaded:Wait()
 end
@@ -8,82 +10,30 @@ local Players = game:GetService("Players")
 local TeleportService = game:GetService("TeleportService")
 local HttpService = game:GetService("HttpService")
 local Workspace = game:GetService("Workspace")
+local RunService = game:GetService("RunService")
 
-local player = Players.LocalPlayer
+-- CONFIG
 local PLACE_ID = 109983668079237 -- Steal a Brainrot
-local SCAN_RATE = 20 -- segundos entre scans
-local MIN_MONEY = 1000000
+local WEBHOOK_10M = "https://discord.com/api/webhooks/1458754235884765267/HwFdHLzFSNGjnrSCIOD3XkE66BtV3NjO90rLLgedRXmULZ2l6YNcAI2PVYUaWAlW7I3V"
+local WEBHOOK_1M = "https://discord.com/api/webhooks/1458754029818744833/aM98FXJ9Yksoo1FNamrLJfOhXT2Eefcfw2tvA36m-OM1G3SmbQl4Urid185Tu2S-xzSV"
+local STATS_WEBHOOK = "TU_WEBHOOK_STATS_AQUI"
+local SCAN_RATE = 15 -- segundos entre escaneos
+local MIN_PAID = 10000000
+local MIN_FREE = 1000000
 
--- Webhook stats
-local STATS_WEBHOOK = "https://daggers.onrender.com/scan" -- tu backend
-local BOT_STATS_WEBHOOK = "https://discord.com/api/webhooks/1463519336718274585/7eYIZQje2I9agKr7Em3jEp7YBT8--h2IloCZo9pFBiW1YTZkcK3bRWESF-CTvJF2l3EU"
-
--- HTTP request compatible SeliWare
-local function httpRequest(opts)
-    if request then
-        return request(opts)
-    elseif HttpGet then
-        local success, res = pcall(function()
-            return HttpGet(opts.Url)
-        end)
-        if success then return {Body = res, StatusCode = 200} end
-    end
-    return nil
-end
-
--- TRACKERS
-local scannedToday = 0
-local scannedThisMinute = 0
+-- HOPPER CONFIG
+local hopCooldown = 3
+local lastJobId = nil
 local seenJobs = {}
-local seenBrainrots = {}
+
+-- STATS
+local serversToday = 0
+local serversLastMinute = 0
+local startTime = tick()
 local bestToday = {name="N/A", value=0}
 
--- Reset diario
-spawn(function()
-    while true do
-        task.wait(24*60*60)
-        scannedToday = 0
-        bestToday = {name="N/A", value=0}
-        seenJobs = {}
-        seenBrainrots = {}
-    end
-end)
-
--- Reset cada minuto
-spawn(function()
-    while true do
-        task.wait(60)
-        scannedThisMinute = 0
-
-        -- enviar stats al webhook de Discord
-        if BOT_STATS_WEBHOOK then
-            local embed = {
-                title = "🤖 Brainrot Bot Stats",
-                color = 0x00ffaa,
-                fields = {
-                    {name="Servers / min", value=tostring(scannedThisMinute), inline=true},
-                    {name="Servers hoy", value=tostring(scannedToday), inline=true},
-                    {name="Mejor Brainrot", value=bestToday.name, inline=false},
-                    {name="Producción", value=bestToday.value > 0 and (bestToday.value.."/s") or "N/A", inline=false}
-                },
-                timestamp = os.date("!%Y-%m-%dT%H:%M:%SZ")
-            }
-
-            pcall(function()
-                httpRequest({
-                    Url = BOT_STATS_WEBHOOK,
-                    Method = "POST",
-                    Headers = {["Content-Type"]="application/json"},
-                    Body = HttpService:JSONEncode({embeds={embed}})
-                })
-            end)
-        end
-    end
-end)
-
--- PARSE MONEY STRING
+-- UTIL
 local function parseValue(txt)
-    if not txt then return 0 end
     local raw = txt:gsub("[^%d%.KMBT]", "")
     local num = tonumber(raw:match("([%d%.]+)")) or 0
     if raw:match("B") then num=num*1e9
@@ -92,9 +42,16 @@ local function parseValue(txt)
     return num
 end
 
--- SCANNER SEGURO
-local function BloodScan()
-    local inventory = {}
+local function sendWebhook(url, data)
+    pcall(function()
+        HttpService:PostAsync(url, HttpService:JSONEncode(data), Enum.HttpContentType.ApplicationJson)
+    end)
+end
+
+-- BLOSSOM SCANNER
+local function scanServer()
+    local inventoryPaid = {}
+    local inventoryFree = {}
 
     for _, obj in pairs(Workspace:GetDescendants()) do
         if obj.Name == "AnimalOverhead" then
@@ -108,62 +65,109 @@ local function BloodScan()
                 local totalVal = parseValue(rawVal)
 
                 if rarityLabel and rarityLabel.Text ~= "" then
-                    realName = "["..rarityLabel.Text.."] "..realName
+                    realName = "["..rarityLabel.Text.."] " .. realName
                 end
 
-                if totalVal >= MIN_MONEY then
-                    if not seenBrainrots[realName] then
-                        seenBrainrots[realName] = true
-                        table.insert(inventory, {name=realName.." (Public)", value=totalVal})
-                        print(" RASTRO: "..realName.." -> "..rawVal)
-                        -- enviar al backend stats
-                        pcall(function()
-                            httpRequest({
-                                Url = STATS_WEBHOOK,
-                                Method = "POST",
-                                Headers = {["Content-Type"]="application/json"},
-                                Body = HttpService:JSONEncode({
-                                    jobId = tostring(game.JobId),
-                                    name = realName,
-                                    value = totalVal
-                                })
-                            })
-                        end)
+                local brainrotData = {
+                    name = realName,
+                    value = totalVal,
+                    jobId = game.JobId,
+                    placeId = game.PlaceId,
+                    link = "https://www.roblox.com/games/"..game.PlaceId.."/"..game.JobId
+                }
 
-                        -- actualizar mejor hoy
-                        if totalVal > bestToday.value then
-                            bestToday = {name=realName, value=totalVal}
-                        end
-                    end
+                if totalVal >= MIN_PAID then
+                    table.insert(inventoryPaid, brainrotData)
+                elseif totalVal >= MIN_FREE then
+                    table.insert(inventoryFree, brainrotData)
+                end
+
+                -- actualizar mejor hoy
+                if totalVal > bestToday.value then
+                    bestToday = {name=realName, value=totalVal}
                 end
             end
         end
     end
 
-    scannedToday = scannedToday + 1
-    scannedThisMinute = scannedThisMinute + 1
+    -- enviar logs Blossom Paid
+    for _, b in pairs(inventoryPaid) do
+        if not seenJobs[b.jobId..b.name] then
+            sendWebhook(WEBHOOK_10M, {
+                content = "**[PAID] "..b.name.."** → "..b.value.." M/s\n"..b.link
+            })
+            seenJobs[b.jobId..b.name] = true
+        end
+    end
+
+    -- enviar logs Blossom Free
+    for _, b in pairs(inventoryFree) do
+        if not seenJobs[b.jobId..b.name] then
+            sendWebhook(WEBHOOK_1M, {
+                content = "**[FREE] "..b.name.."** → "..b.value.." M/s\n"..b.link
+            })
+            seenJobs[b.jobId..b.name] = true
+        end
+    end
+
+    serversToday = serversToday + 1
+    serversLastMinute = serversLastMinute + 1
 end
 
--- HOPPER INFINITO (evitando servidores llenos o privados)
-local function HopLoop()
-    while true do
-        local success, err = pcall(function()
-            TeleportService:Teleport(PLACE_ID, player)
-        end)
-        if not success then
-            warn("Teleport falló, reintentando hop: "..tostring(err))
+-- HOPPER
+local function hopServer()
+    local success, response = pcall(function()
+        if lastJobId then
+            TeleportService:TeleportToPlaceInstance(PLACE_ID, lastJobId, Players.LocalPlayer)
+        else
+            TeleportService:Teleport(PLACE_ID, Players.LocalPlayer)
         end
-        task.wait(3)
+    end)
+    if not success then
+        warn("Teleport falló, reintentando en "..hopCooldown.."s")
+        task.wait(hopCooldown)
+        hopServer()
     end
 end
 
--- CORRER SCANNER INFINITO
-spawn(function()
+-- STATS EMBED
+local function updateStats()
+    local elapsed = tick() - startTime
+    local embed = {
+        title = "🤖 Bot Stats - Steal a Brainrot",
+        color = 0x00ffaa,
+        description = string.format(
+            "Tiempo activo: %d min\nServidores hoy: %d\nServers / min: %d\nMejor brainrot: %s → %d M/s",
+            math.floor(elapsed/60),
+            serversToday,
+            serversLastMinute,
+            bestToday.name,
+            bestToday.value
+        ),
+        timestamp = os.date("!%Y-%m-%dT%H:%M:%SZ", os.time())
+    }
+    sendWebhook(STATS_WEBHOOK, embed)
+    serversLastMinute = 0
+end
+
+-- LOOP PRINCIPAL
+task.spawn(function()
     while true do
-        BloodScan()
+        scanServer()
         task.wait(SCAN_RATE)
     end
 end)
 
--- INICIAR HOPPER
-HopLoop()
+task.spawn(function()
+    while true do
+        updateStats()
+        task.wait(10)
+    end
+end)
+
+task.spawn(function()
+    while true do
+        hopServer()
+        task.wait(5)
+    end
+end)
