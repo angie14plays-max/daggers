@@ -1,109 +1,47 @@
 import express from "express";
-import cors from "cors";
 import fetch from "node-fetch";
 
-/* ================= CONFIG ================= */
-
-const PORT = process.env.PORT || 3000;
-const PLACEID = process.env.PLACEID;
-const STATS_WEBHOOK = process.env.STATS_WEBHOOK;
-
-/* ================= APP ================= */
-
 const app = express();
-app.use(cors());
 app.use(express.json());
 
-/* ================= STATS ================= */
-
-let serversToday = 0;
-let serversThisMinute = 0;
-let bestBrainrotToday = 0;
-let dayStart = Date.now();
-
-/* ========== RESET DAILY ========== */
-setInterval(() => {
-  if (Date.now() - dayStart >= 86400000) {
-    serversToday = 0;
-    bestBrainrotToday = 0;
-    dayStart = Date.now();
-    console.log("🔁 Daily stats reset");
-  }
-}, 60_000);
-
-/* ========== SEND STATS ========== */
-async function sendStats() {
-  if (!STATS_WEBHOOK) return;
-
-  await fetch(STATS_WEBHOOK, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      embeds: [{
-        title: "📊 Bot Stats",
-        color: 0x00ff99,
-        fields: [
-          { name: "Servers/min", value: String(serversThisMinute), inline: true },
-          { name: "Servers today", value: String(serversToday), inline: true },
-          { name: "Best Brainrot Today", value: bestBrainrotToday > 0 ? `${bestBrainrotToday}M/s` : "None", inline: false }
-        ],
-        timestamp: new Date().toISOString()
-      }]
-    })
-  }).catch(() => {});
-}
-
-/* ========== PER MINUTE ========== */
-setInterval(() => {
-  serversThisMinute = 0;
-  sendStats();
-}, 60_000);
-
-/* ================= API ================= */
+const PLACEID = process.env.PLACEID || "109983668079237";
+const MIN_FREE_SLOTS = 4; // 🔑 CLAVE anti 279
+const PORT = process.env.PORT || 3000;
 
 app.get("/", (_, res) => {
-  res.json({ status: "ok", placeId: PLACEID });
+  res.json({ status: "ok" });
 });
 
-/* ===== BOT REPORTS SERVER SCAN ===== */
-app.post("/report-scan", (req, res) => {
-  serversToday++;
-  serversThisMinute++;
-  res.json({ ok: true });
-});
-
-/* ===== BOT REPORTS BRAINROT ===== */
-app.post("/report-brainrot", (req, res) => {
-  const { value } = req.body;
-  if (typeof value === "number" && value > bestBrainrotToday) {
-    bestBrainrotToday = value;
-  }
-  res.json({ ok: true });
-});
-
-/* ===== NEXT SERVER (SIMPLE & FAST) ===== */
-app.post("/next-server", async (req, res) => {
+app.post("/next-server", async (_, res) => {
   try {
     const url = `https://games.roblox.com/v1/games/${PLACEID}/servers/Public?limit=100`;
-    const r = await fetch(url);
+    const r = await fetch(url, {
+      headers: { "User-Agent": "Mozilla/5.0" }
+    });
     const j = await r.json();
 
-    const servers = j.data
-      .filter(s => s.playing < s.maxPlayers)
-      .sort(() => Math.random() - 0.5);
-
-    if (!servers.length) {
-      return res.json({ jobId: "" });
+    if (!j.data || !Array.isArray(j.data)) {
+      return res.json({ retry: true });
     }
 
-    res.json({ jobId: servers[0].id });
-  } catch (e) {
-    res.status(500).json({ jobId: "" });
+    const candidates = j.data.filter(s => {
+      if (typeof s.playing !== "number") return false;
+      if (typeof s.maxPlayers !== "number") return false;
+      return (s.maxPlayers - s.playing) >= MIN_FREE_SLOTS;
+    });
+
+    if (candidates.length === 0) {
+      return res.json({ retry: true });
+    }
+
+    const pick = candidates[Math.floor(Math.random() * candidates.length)];
+    return res.json({ jobId: pick.id });
+
+  } catch (err) {
+    return res.json({ retry: true });
   }
 });
 
-/* ================= START ================= */
-
 app.listen(PORT, () => {
-  console.log(`🚀 API running on port ${PORT}`);
+  console.log("API UP | PLACEID:", PLACEID, "| MIN_FREE_SLOTS:", MIN_FREE_SLOTS);
 });
