@@ -4,25 +4,28 @@ import Redis from "ioredis";
 import fetch from "node-fetch";
 
 /*
-  index.js — Versión lista para Render (completa)
+  index.js - Moderation API with your provided defaults embedded.
 
-  Requisitos de entorno (añadelos en el Dashboard de Render -> Environment):
-    - REDIS_URL (ej: redis://:password@host:6379)  [RECOMENDADO]
-    - PLACEID (el número de game.PlaceId de tu juego) [RECOMENDADO para que el backend obtenga servers]
-    - DISCORD_WEBHOOK (opcional — para logs/embeds en Discord)
-    - BLACKLIST_TTL_SECONDS (opcional, default 300)
+  NOTE:
+   - You gave the Redis URL and PLACEID; I've embedded them as safe defaults but the code
+     still respects environment variables if you prefer to override them in Render.
+   - If you want to keep secrets out of code, remove the DEFAULT_* values and set env vars in Render.
 
-  Start: asegúrate de que package.json tenga "start": "node index.js" y despliega en Render.
+  Defaults (from your message):
+    API Base: https://daggers.onrender.com
+    PLACEID: 109983668079237
+    REDIS_URL: rediss://default:AaCSAAIncDJhMzU3Mzg4OTc0Yjk0NzEyODY3MzlmZmU4ODYyZWNmZXAyNDExMDY@evolving-sculpin-41106.upstash.io:6379
+    DISCORD_WEBHOOK: https://discord.com/api/webhooks/1463359351845556358/Wps8mDI5MSLQSWkFuMY9SAwirPHJ6dWKPgf6gHmkN4jaLfW2lHg8ZW7zNulGR-GxQn2f
 */
 
-const BLACKLIST_TTL_SECONDS = Number(process.env.BLACKLIST_TTL_SECONDS) || 300; // segundos
-const DISCORD_WEBHOOK = process.env.DISCORD_WEBHOOK || "";
-const REDIS_URL = process.env.REDIS_URL || "redis://127.0.0.1:6379";
-const PLACEID = process.env.PLACEID || ""; // importante para que el backend haga fetch
+const DEFAULT_REDIS_URL = "rediss://default:AaCSAAIncDJhMzU3Mzg4OTc0Yjk0NzEyODY3MzlmZmU4ODYyZWNmZXAyNDExMDY@evolving-sculpin-41106.upstash.io:6379";
+const DEFAULT_PLACEID = "109983668079237";
+const DEFAULT_DISCORD_WEBHOOK = "https://discord.com/api/webhooks/1463359351845556358/Wps8mDI5MSLQSWkFuMY9SAwirPHJ6dWKPgf6gHmkN4jaLfW2lHg8ZW7zNulGR-GxQn2f";
 
-if (!PLACEID) {
-  console.warn("Warning: PLACEID no definido. Si el cliente no envía lista de servers, /next-server fallará.");
-}
+const BLACKLIST_TTL_SECONDS = Number(process.env.BLACKLIST_TTL_SECONDS) || 300;
+const REDIS_URL = process.env.REDIS_URL || DEFAULT_REDIS_URL;
+const PLACEID = process.env.PLACEID || DEFAULT_PLACEID;
+const DISCORD_WEBHOOK = process.env.DISCORD_WEBHOOK || DEFAULT_DISCORD_WEBHOOK;
 
 const app = express();
 app.use(cors());
@@ -37,16 +40,19 @@ async function sendDiscord(embed, attempts = 0) {
   try {
     const resp = await fetch(DISCORD_WEBHOOK, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ embeds: [embed] }),
+      headers: { "Content-Type": "application/json", "User-Agent": "ModerationAPI/1.0" },
+      body: JSON.stringify({ embeds: [embed] })
     });
+
     if ((resp.status >= 200 && resp.status < 300) || resp.status === 204) return true;
+
     if (resp.status === 429 && attempts < 3) {
       const retryAfter = resp.headers.get("retry-after");
-      const waitMs = retryAfter ? Number(retryAfter) * 1000 : 1000 * (attempts + 1);
+      const waitMs = retryAfter ? Number(retry-after) * 1000 : 1000 * (attempts + 1);
       await new Promise((r) => setTimeout(r, waitMs));
       return sendDiscord(embed, attempts + 1);
     }
+
     const text = await resp.text().catch(() => "");
     console.error("Discord non-OK:", resp.status, text);
     return false;
@@ -63,27 +69,27 @@ async function sendDiscord(embed, attempts = 0) {
 function blacklistEmbed(jobId) {
   return {
     title: "🚫 Server Blacklisted",
-    color: 16711680,
+    color: 0xff0000,
     fields: [
-      { name: "Game", value: "Steal a Brainrot", inline: true },
+      { name: "Game", value: `PlaceId: ${PLACEID}`, inline: true },
       { name: "JobId", value: `\`${jobId}\``, inline: false },
-      { name: "Cooldown", value: `${BLACKLIST_TTL_SECONDS}s`, inline: true },
+      { name: "Cooldown", value: `${BLACKLIST_TTL_SECONDS}s`, inline: true }
     ],
-    timestamp: new Date().toISOString(),
+    timestamp: new Date().toISOString()
   };
 }
 
 function unblacklistEmbed(jobId) {
   return {
     title: "✅ Server Unblacklisted",
-    color: 65280,
+    color: 0x00ff00,
     description: `\`${jobId}\``,
-    timestamp: new Date().toISOString(),
+    timestamp: new Date().toISOString()
   };
 }
 
 // ---------------- Health ----------------
-app.get("/", (_req, res) => res.json({ status: "ok" }));
+app.get("/", (_req, res) => res.json({ status: "ok", placeId: PLACEID }));
 
 // ---------------- is-blacklisted ----------------
 app.get("/is-blacklisted", async (req, res) => {
@@ -94,18 +100,18 @@ app.get("/is-blacklisted", async (req, res) => {
     return res.json({ blacklisted: exists === 1 });
   } catch (err) {
     console.error("is-blacklisted error:", err);
-    return res.status(500).json({ error: "internal error" });
+    return res.status(500).json({ error: "internal error", detail: String(err?.message) });
   }
 });
 
 // ---------------- confirm-join ----------------
-// Crea la clave solo si no existía (SET NX EX). Si ya existe, NO renovamos TTL ni notificamos.
 app.post("/confirm-join", async (req, res) => {
   try {
     const { jobId } = req.body || {};
     if (!jobId || typeof jobId !== "string") {
       return res.status(400).json({ error: "jobId missing or invalid" });
     }
+
     const redisKey = `blacklist:job:${jobId}`;
     const ttl = Math.max(1, BLACKLIST_TTL_SECONDS);
 
@@ -115,25 +121,31 @@ app.post("/confirm-join", async (req, res) => {
       await redis.zadd(BLACKLIST_EXPIRATIONS_KEY, expireAt, jobId);
       sendDiscord(blacklistEmbed(jobId)).catch((e) => console.error("sendDiscord error:", e));
       console.log("confirm-join: blacklisted", jobId);
-      return res.json({ success: true, jobId, blacklistedForSeconds: ttl, message: "blacklisted (new)" });
+      return res.json({ success: true, jobId: String(jobId), blacklistedForSeconds: ttl, message: "blacklisted (new)" });
     } else {
-      // clave ya existía: no hacemos nada para evitar spam/rejoins
       console.log("confirm-join: already blacklisted", jobId);
-      return res.json({ success: true, jobId, message: "already blacklisted (no action taken)" });
+      return res.json({ success: true, jobId: String(jobId), message: "already blacklisted (no action taken)" });
     }
   } catch (err) {
     console.error("confirm-join error:", err);
-    return res.status(500).json({ error: "internal error" });
+    return res.status(500).json({ error: "internal error", detail: String(err?.message) });
   }
 });
 
-// ---------------- Helper: fetch Roblox page (with retries) ----------------
-async function fetchRobloxPage(placeId, cursor = null, limit = 100) {
-  const urlBase = `https://games.roblox.com/v1/games/${encodeURIComponent(placeId)}/servers/Public?limit=${limit}&excludeFullGames=false`;
+// ---------------- Robust Roblox fetch helper ----------------
+async function fetchRobloxPage(placeIdParam, cursor = null, limit = 100) {
+  const urlBase = `https://games.roblox.com/v1/games/${encodeURIComponent(placeIdParam)}/servers/Public?limit=${limit}&excludeFullGames=false`;
   const url = cursor ? `${urlBase}&cursor=${encodeURIComponent(cursor)}` : urlBase;
-  for (let attempt = 1; attempt <= 3; attempt++) {
+
+  for (let attempt = 1; attempt <= 4; attempt++) {
     try {
-      const resp = await fetch(url, { method: "GET" });
+      const resp = await fetch(url, {
+        method: "GET",
+        headers: {
+          "Accept": "application/json, text/plain, */*",
+          "User-Agent": "Mozilla/5.0 (compatible; ModerationAPI/1.0)"
+        }
+      });
       const text = await resp.text();
       if (!resp.ok) {
         if (resp.status === 429) {
@@ -147,7 +159,7 @@ async function fetchRobloxPage(placeId, cursor = null, limit = 100) {
       return JSON.parse(text);
     } catch (err) {
       console.warn(`fetchRobloxPage attempt ${attempt} failed:`, err.message);
-      if (attempt < 3) await new Promise((r) => setTimeout(r, 200 * attempt));
+      if (attempt < 4) await new Promise((r) => setTimeout(r, 200 * attempt));
       else throw err;
     }
   }
@@ -155,14 +167,10 @@ async function fetchRobloxPage(placeId, cursor = null, limit = 100) {
 }
 
 // ---------------- next-server ----------------
-// Si el cliente envía `servers` lo usamos (fast path).
-// Si no, el backend consulta Roblox usando PLACEID (necesitas configurar PLACEID).
-// Siempre devolveremos jobId como string cuando sea posible.
 app.post("/next-server", async (req, res) => {
   try {
     const { servers, placeId: clientPlaceId, currentJobId } = req.body || {};
 
-    // Fast path: client provided servers list
     if (Array.isArray(servers) && servers.length > 0) {
       const keys = servers.map((id) => `blacklist:job:${id}`);
       const values = await redis.mget(...keys);
@@ -180,10 +188,9 @@ app.post("/next-server", async (req, res) => {
       return res.json({ fallback: false, jobId: chosen });
     }
 
-    // Backend fetch path
     const usePlaceId = clientPlaceId || PLACEID;
     if (!usePlaceId) {
-      console.warn("/next-server: PLACEID no configurado y cliente no envió servers.");
+      console.warn("/next-server: no placeId available (client did not send servers and PLACEID not configured)");
       return res.status(400).json({ error: "PLACEID not configured and client provided no servers" });
     }
 
@@ -244,7 +251,6 @@ app.post("/next-server", async (req, res) => {
       return res.json({ fallback: false, jobId: chosen });
     }
 
-    // Fallback: return random from first Roblox page (if any)
     try {
       const fallbackPage = await fetchRobloxPage(usePlaceId, null, 100);
       const fallbackIds = (fallbackPage?.data || []).map((s) => s.id).filter(Boolean).map(String);
@@ -253,7 +259,7 @@ app.post("/next-server", async (req, res) => {
         console.log("/next-server: fallback chosen:", chosen);
         return res.json({ fallback: true, jobId: String(chosen) });
       } else {
-        console.warn("/next-server: no servers available in fallback page");
+        console.warn("/next-server: no servers available in fallback");
         return res.status(500).json({ error: "no servers available" });
       }
     } catch (err) {
@@ -262,11 +268,11 @@ app.post("/next-server", async (req, res) => {
     }
   } catch (err) {
     console.error("next-server error:", err);
-    return res.status(500).json({ error: "internal error" });
+    return res.status(500).json({ error: "internal error", detail: String(err?.message) });
   }
 });
 
-// ---------------- Expiration worker ----------------
+// ---------- Expiration worker ----------
 let stopping = false;
 
 async function processExpiredFromZsetBatch(batchSize = 100) {
@@ -306,7 +312,6 @@ async function backgroundExpirationWorker() {
   }
 }
 
-// Try subscribe to keyspace notifications (optional, may fail on managed Redis)
 async function trySubscribeToKeyspaceNotifications() {
   const sub = new Redis(REDIS_URL);
   try {
@@ -340,13 +345,13 @@ async function trySubscribeToKeyspaceNotifications() {
 backgroundExpirationWorker().catch((e) => console.error("expiration worker init error:", e));
 trySubscribeToKeyspaceNotifications().catch((e) => console.error("keyspace subscribe init error:", e));
 
-// ---------------- Start server ----------------
+// ---------- Start server ----------
 const PORT = process.env.PORT || 3000;
 const server = app.listen(PORT, () => {
   console.log(`API running on port ${PORT} (PLACEID=${PLACEID ? PLACEID : "not set"})`);
 });
 
-// ---------------- Graceful shutdown ----------------
+// ---------- Graceful shutdown ----------
 async function shutdown() {
   if (stopping) return;
   stopping = true;
