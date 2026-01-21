@@ -1,47 +1,44 @@
-import express from "express";
-import fetch from "node-fetch";
+if not game:IsLoaded() then game.Loaded:Wait() end
 
-const app = express();
-app.use(express.json());
+local HttpService = game:GetService("HttpService")
+local TeleportService = game:GetService("TeleportService")
+local Players = game:GetService("Players")
 
-const PLACEID = process.env.PLACEID || "109983668079237";
-const MIN_FREE_SLOTS = 4; // 🔑 CLAVE anti 279
-const PORT = process.env.PORT || 3000;
+local player = Players.LocalPlayer
+local PLACE_ID = game.PlaceId
+local API = "https://TU_RENDER.onrender.com/next-server"
 
-app.get("/", (_, res) => {
-  res.json({ status: "ok" });
-});
+-- memoria local (solo sesión)
+_G.VisitedServers = _G.VisitedServers or {}
+_G.VisitedServers[game.JobId] = true
 
-app.post("/next-server", async (_, res) => {
-  try {
-    const url = `https://games.roblox.com/v1/games/${PLACEID}/servers/Public?limit=100`;
-    const r = await fetch(url, {
-      headers: { "User-Agent": "Mozilla/5.0" }
-    });
-    const j = await r.json();
+TeleportService.TeleportInitFailed:Connect(function(p)
+    if p == player then
+        warn("TP falló, reintentando...")
+    end
+end)
 
-    if (!j.data || !Array.isArray(j.data)) {
-      return res.json({ retry: true });
-    }
+task.spawn(function()
+    while true do
+        local ok, res = pcall(function()
+            return HttpService:PostAsync(API, "{}", Enum.HttpContentType.ApplicationJson)
+        end)
 
-    const candidates = j.data.filter(s => {
-      if (typeof s.playing !== "number") return false;
-      if (typeof s.maxPlayers !== "number") return false;
-      return (s.maxPlayers - s.playing) >= MIN_FREE_SLOTS;
-    });
+        if ok then
+            local data = HttpService:JSONDecode(res)
+            if data.jobId and not _G.VisitedServers[data.jobId] then
+                _G.VisitedServers[data.jobId] = true
+                pcall(function()
+                    TeleportService:TeleportToPlaceInstance(
+                        PLACE_ID,
+                        data.jobId,
+                        player
+                    )
+                end)
+                return
+            end
+        end
 
-    if (candidates.length === 0) {
-      return res.json({ retry: true });
-    }
-
-    const pick = candidates[Math.floor(Math.random() * candidates.length)];
-    return res.json({ jobId: pick.id });
-
-  } catch (err) {
-    return res.json({ retry: true });
-  }
-});
-
-app.listen(PORT, () => {
-  console.log("API UP | PLACEID:", PLACEID, "| MIN_FREE_SLOTS:", MIN_FREE_SLOTS);
-});
+        task.wait(1) -- hop infinito
+    end
+end)
