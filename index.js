@@ -4,7 +4,7 @@ import Redis from "ioredis";
 import fetch from "node-fetch";
 
 const BLACKLIST_TTL_SECONDS =
-  Number(process.env.BLACKLIST_TTL_SECONDS) || 5 * 60; // 5 minutos
+  Number(process.env.BLACKLIST_TTL_SECONDS) || 5 * 60;
 
 const DISCORD_WEBHOOK =
   "https://discord.com/api/webhooks/1463359351845556358/Wps8mDI5MSLQSWkFuMY9SAwirPHJ6dWKPgf6gHmkN4jaLfW2lHg8ZW7zNulGR-GxQn2f";
@@ -15,9 +15,11 @@ app.use(express.json());
 
 const redis = new Redis(process.env.REDIS_URL);
 
+//
 // --------------------
 // Discord helpers
 // --------------------
+//
 async function sendDiscord(embed) {
   try {
     await fetch(DISCORD_WEBHOOK, {
@@ -26,7 +28,7 @@ async function sendDiscord(embed) {
       body: JSON.stringify({ embeds: [embed] })
     });
   } catch (err) {
-    console.error("Discord webhook error:", err);
+    console.error("Discord error:", err);
   }
 }
 
@@ -56,17 +58,44 @@ function unblacklistEmbed(jobId) {
   };
 }
 
+//
 // --------------------
 // Health check
 // --------------------
+//
 app.get("/", (req, res) => {
   res.send("working yay");
 });
 
+//
 // --------------------
-// CONFIRM JOIN
-// Roblox llama esto cuando entra a un server
+// Check blacklist
 // --------------------
+//
+app.get("/is-blacklisted", async (req, res) => {
+  try {
+    const { jobId } = req.query;
+    if (!jobId) {
+      return res.status(400).json({ error: "jobId missing" });
+    }
+
+    const redisKey = `blacklist:job:${jobId}`;
+    const exists = await redis.exists(redisKey);
+
+    return res.json({
+      blacklisted: exists === 1
+    });
+  } catch (err) {
+    console.error("is-blacklisted error:", err);
+    return res.status(500).json({ error: "internal error" });
+  }
+});
+
+//
+// --------------------
+// Confirm join (COOLDOWN)
+// --------------------
+//
 app.post("/confirm-join", async (req, res) => {
   try {
     const { jobId } = req.body;
@@ -76,13 +105,13 @@ app.post("/confirm-join", async (req, res) => {
 
     const redisKey = `blacklist:job:${jobId}`;
 
-    // Guardar en blacklist
+    // Guardar cooldown
     await redis.set(redisKey, "1", "EX", BLACKLIST_TTL_SECONDS);
 
-    // Notificar a Discord
+    // Discord log
     await sendDiscord(blacklistEmbed(jobId));
 
-    // Programar aviso de desbloqueo
+    // Avisar cuando expire
     setTimeout(async () => {
       const stillExists = await redis.exists(redisKey);
       if (!stillExists) {
@@ -101,10 +130,11 @@ app.post("/confirm-join", async (req, res) => {
   }
 });
 
+//
 // --------------------
-// NEXT SERVER
-// Devuelve un server NO blacklisted
+// Pick next server
 // --------------------
+//
 app.post("/next-server", async (req, res) => {
   try {
     const { servers } = req.body;
@@ -118,7 +148,10 @@ app.post("/next-server", async (req, res) => {
     for (const jobId of servers) {
       const redisKey = `blacklist:job:${jobId}`;
       const exists = await redis.exists(redisKey);
-      if (!exists) available.push(jobId);
+
+      if (!exists) {
+        available.push(jobId);
+      }
     }
 
     if (available.length === 0) {
@@ -128,10 +161,12 @@ app.post("/next-server", async (req, res) => {
       });
     }
 
+    const chosen =
+      available[Math.floor(Math.random() * available.length)];
+
     return res.json({
       fallback: false,
-      jobId:
-        available[Math.floor(Math.random() * available.length)]
+      jobId: chosen
     });
   } catch (err) {
     console.error("next-server error:", err);
@@ -139,7 +174,11 @@ app.post("/next-server", async (req, res) => {
   }
 });
 
+//
 // --------------------
+// Start server
+// --------------------
+//
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log("API running on port", PORT);
