@@ -1,6 +1,6 @@
 return {
-    PLACE_ID = game.PlaceId,
-    MIN_VALUE = 1_000_000,
-    STATS_API = "https://TU-APP.onrender.com/scan",
-    HOP_DELAY = 0.35
+    BACKEND_URL = "http://127.0.0.1:3000/scan", -- backend stats
+    PLACE_ID = 109983668079237,
+    MIN_MONEY = 1000000,
+    SCAN_RATE = 20 -- segundos
 }
