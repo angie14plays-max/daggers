@@ -1,44 +1,71 @@
-if not game:IsLoaded() then game.Loaded:Wait() end
+import express from "express";
+import fetch from "node-fetch";
 
-local HttpService = game:GetService("HttpService")
-local TeleportService = game:GetService("TeleportService")
-local Players = game:GetService("Players")
+const app = express();
+app.use(express.json());
 
-local player = Players.LocalPlayer
-local PLACE_ID = game.PlaceId
-local API = "https://TU_RENDER.onrender.com/next-server"
+const STATS_WEBHOOK = process.env.STATS_WEBHOOK;
 
--- memoria local (solo sesión)
-_G.VisitedServers = _G.VisitedServers or {}
-_G.VisitedServers[game.JobId] = true
+let scannedToday = 0;
+let scannedThisMinute = 0;
+let seenJobs = new Set();
 
-TeleportService.TeleportInitFailed:Connect(function(p)
-    if p == player then
-        warn("TP falló, reintentando...")
-    end
-end)
+let bestToday = {
+  name: "N/A",
+  value: 0
+};
 
-task.spawn(function()
-    while true do
-        local ok, res = pcall(function()
-            return HttpService:PostAsync(API, "{}", Enum.HttpContentType.ApplicationJson)
-        end)
+// reset diario
+setInterval(() => {
+  scannedToday = 0;
+  bestToday = { name: "N/A", value: 0 };
+  seenJobs.clear();
+}, 24 * 60 * 60 * 1000);
 
-        if ok then
-            local data = HttpService:JSONDecode(res)
-            if data.jobId and not _G.VisitedServers[data.jobId] then
-                _G.VisitedServers[data.jobId] = true
-                pcall(function()
-                    TeleportService:TeleportToPlaceInstance(
-                        PLACE_ID,
-                        data.jobId,
-                        player
-                    )
-                end)
-                return
-            end
-        end
+// stats cada minuto
+setInterval(async () => {
+  const embed = {
+    title: "🤖 Brainrot Bot Stats",
+    color: 0x00ffaa,
+    fields: [
+      { name: "Servers / min", value: String(scannedThisMinute), inline: true },
+      { name: "Servers hoy", value: String(scannedToday), inline: true },
+      { name: "Mejor Brainrot", value: bestToday.name, inline: false },
+      { name: "Producción", value: bestToday.value > 0 ? `${bestToday.value}/s` : "N/A", inline: false }
+    ],
+    timestamp: new Date().toISOString()
+  };
 
-        task.wait(1) -- hop infinito
-    end
-end)
+  scannedThisMinute = 0;
+
+  if (STATS_WEBHOOK) {
+    await fetch(STATS_WEBHOOK, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ embeds: [embed] })
+    });
+  }
+}, 60 * 1000);
+
+// endpoint del scanner
+app.post("/scan", (req, res) => {
+  const { jobId, name, value } = req.body;
+
+  if (!jobId || seenJobs.has(jobId)) {
+    return res.json({ ignored: true });
+  }
+
+  seenJobs.add(jobId);
+  scannedToday++;
+  scannedThisMinute++;
+
+  if (value > bestToday.value) {
+    bestToday = { name, value };
+  }
+
+  res.json({ ok: true });
+});
+
+app.listen(3000, () => {
+  console.log("Backend stats online");
+});
